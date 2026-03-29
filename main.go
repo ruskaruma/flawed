@@ -51,7 +51,9 @@ func main() {
 		m.docker = docker
 		m.updateAlerts()
 		m.pushHistory()
-		logStats(m.stats, m.docker)
+		if err := logStats(m.stats, m.docker); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		}
 		fmt.Println(m.View())
 		return
 	}

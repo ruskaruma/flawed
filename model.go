@@ -39,8 +39,9 @@ type model struct {
 
 	// UI state
 	killMsg    string
-	killMsgTTL int // ticks remaining to show kill message
-	animFrame  int // animation frame counter for greeter
+	killMsgTTL int   // ticks remaining to show kill message
+	animFrame  int   // animation frame counter for greeter
+	logErr     error // last error from logStats
 
 	width  int
 	height int
@@ -111,7 +112,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stats = sysStats(msg)
 		m.updateAlerts()
 		m.pushHistory()
-		logStats(m.stats, m.docker)
+		if err := logStats(m.stats, m.docker); err != nil {
+			m.logErr = err
+		}
 
 	case procsMsg:
 		m.procs = []procInfo(msg)

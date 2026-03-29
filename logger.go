@@ -7,15 +7,15 @@ import (
 	"time"
 )
 
-func logStats(s sysStats, containers []containerInfo) {
+func logStats(s sysStats, containers []containerInfo) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return
+		return fmt.Errorf("logStats: get home dir: %w", err)
 	}
 
 	dir := filepath.Join(home, ".flawed")
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return
+		return fmt.Errorf("logStats: create log dir: %w", err)
 	}
 
 	path := filepath.Join(dir, "log.csv")
@@ -26,7 +26,7 @@ func logStats(s sysStats, containers []containerInfo) {
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return
+		return fmt.Errorf("logStats: open log file: %w", err)
 	}
 	defer f.Close()
 
@@ -44,4 +44,5 @@ func logStats(s sysStats, containers []containerInfo) {
 		s.netDown,
 		len(containers),
 	)
+	return nil
 }
