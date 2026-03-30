@@ -9,4 +9,5 @@ type config struct {
 	sortBy   string
 	alertCPU float64
 	alertRAM float64
+	verbose  bool
 }

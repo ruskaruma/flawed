@@ -112,7 +112,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stats = sysStats(msg)
 		m.updateAlerts()
 		m.pushHistory()
-		if err := logStats(m.stats, m.docker); err != nil {
+		if err := logStats(m.stats, m.docker, m.cfg.verbose); err != nil {
 			m.logErr = err
 		}
 

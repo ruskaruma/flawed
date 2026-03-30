@@ -23,6 +23,9 @@ func main() {
 	alertCPU := flag.Float64("alert-cpu", 85, "CPU alert threshold (%)")
 	alertRAM := flag.Float64("alert-ram", 90, "RAM alert threshold (%)")
 
+	verbose := flag.Bool("verbose", false, "print stats to stderr on each refresh")
+	flag.BoolVar(verbose, "v", false, "print stats to stderr on each refresh (shorthand)")
+
 	flag.Parse()
 
 	if *sortBy != "cpu" && *sortBy != "mem" {
@@ -37,6 +40,7 @@ func main() {
 		sortBy:   *sortBy,
 		alertCPU: *alertCPU,
 		alertRAM: *alertRAM,
+		verbose:  *verbose,
 	}
 
 	m := newModel(cfg)
@@ -51,7 +55,7 @@ func main() {
 		m.docker = docker
 		m.updateAlerts()
 		m.pushHistory()
-		if err := logStats(m.stats, m.docker); err != nil {
+		if err := logStats(m.stats, m.docker, cfg.verbose); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		}
 		fmt.Println(m.View())
