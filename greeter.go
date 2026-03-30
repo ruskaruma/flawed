@@ -203,7 +203,7 @@ func viewGreeter(width int, frame int) string {
 
 	// Static content
 	greet := lipgloss.NewStyle().Foreground(titleColor).Bold(true).
-		Render(greeting(hour)+", "+greeterHostname())
+		Render(greeting(hour) + ", " + greeterHostname())
 	clock := valueStyle.Render(now.Format("03:04:05 PM"))
 	date := dimStyle.Render(now.Format("Monday, January 2"))
 	tag := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086")).Italic(true).

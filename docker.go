@@ -95,4 +95,3 @@ func parseMemMB(s string) float64 {
 	v, _ := strconv.ParseFloat(val, 64)
 	return v * multiplier
 }
-

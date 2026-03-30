@@ -42,11 +42,11 @@ type sysStats struct {
 	cpuPerCore []float64
 
 	// Memory
-	memTotal   uint64
-	memUsed    uint64
-	memPercent float64
-	swapTotal  uint64
-	swapUsed   uint64
+	memTotal    uint64
+	memUsed     uint64
+	memPercent  float64
+	swapTotal   uint64
+	swapUsed    uint64
 	swapPercent float64
 
 	// Disk — root partition (kept for sparkline history)
@@ -62,9 +62,9 @@ type sysStats struct {
 	diskWriteSpeed uint64 // bytes/sec
 
 	// Network
-	netUp   uint64 // bytes/sec
-	netDown uint64 // bytes/sec
-	netConns int   // open connections count
+	netUp    uint64 // bytes/sec
+	netDown  uint64 // bytes/sec
+	netConns int    // open connections count
 
 	// Users
 	users []string // logged-in usernames (deduplicated)
