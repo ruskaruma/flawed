@@ -43,6 +43,22 @@ type model struct {
 	animFrame  int   // animation frame counter for greeter
 	logErr     error // last error from logStats
 
+	// Process cursor + filter
+	procCursor  int
+	filterMode  bool
+	filterInput string
+
+	// Help overlay
+	showHelp bool
+
+	// Events
+	events       []sysEvent
+	prevCPUAlert bool
+	prevRAMAlert bool
+
+	// Pending kill name (captured at kill time for event log)
+	pendingKillName string
+
 	width  int
 	height int
 }
@@ -72,17 +88,95 @@ func (m model) Init() tea.Cmd {
 	)
 }
 
+// filteredProcs returns the process list filtered by filterInput (case-insensitive name match).
+func (m model) filteredProcs() []procInfo {
+	if m.filterInput == "" {
+		return m.procs
+	}
+	filter := strings.ToLower(m.filterInput)
+	var out []procInfo
+	for _, p := range m.procs {
+		if strings.Contains(strings.ToLower(p.name), filter) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (m *model) clampCursor() {
+	fp := m.filteredProcs()
+	if len(fp) == 0 {
+		m.procCursor = 0
+		return
+	}
+	if m.procCursor >= len(fp) {
+		m.procCursor = len(fp) - 1
+	}
+	if m.procCursor < 0 {
+		m.procCursor = 0
+	}
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Filter mode captures all printable keys.
+		if m.filterMode {
+			switch msg.String() {
+			case "esc", "enter":
+				m.filterMode = false
+			case "backspace":
+				if len(m.filterInput) > 0 {
+					runes := []rune(m.filterInput)
+					m.filterInput = string(runes[:len(runes)-1])
+					m.procCursor = 0
+				}
+			default:
+				if len(msg.Runes) > 0 {
+					m.filterInput += string(msg.Runes)
+					m.procCursor = 0
+				}
+			}
+			m.clampCursor()
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "k":
-			if len(m.procs) > 0 {
-				pid := m.procs[0].pid
-				return m, killCmd(pid)
+		case "?":
+			m.showHelp = !m.showHelp
+		case "esc":
+			if m.showHelp {
+				m.showHelp = false
+			} else if m.filterInput != "" {
+				m.filterInput = ""
+				m.procCursor = 0
 			}
+		case "/":
+			m.filterMode = true
+			m.filterInput = ""
+			m.procCursor = 0
+		case "j", "down":
+			m.procCursor++
+			m.clampCursor()
+		case "k", "up":
+			m.procCursor--
+			m.clampCursor()
+		case "x":
+			fp := m.filteredProcs()
+			if m.procCursor < len(fp) {
+				p := fp[m.procCursor]
+				m.pendingKillName = p.name
+				return m, killCmd(p.pid)
+			}
+		case "s":
+			if m.cfg.sortBy == "cpu" {
+				m.cfg.sortBy = "mem"
+			} else {
+				m.cfg.sortBy = "cpu"
+			}
+			return m, fetchProcsCmd(m.cfg.procs, m.cfg.sortBy)
 		}
 
 	case tea.WindowSizeMsg:
@@ -112,12 +206,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stats = sysStats(msg)
 		m.updateAlerts()
 		m.pushHistory()
+		// Rising-edge event detection.
+		if m.cpuAlert && !m.prevCPUAlert {
+			m.addEvent("crit", fmt.Sprintf("CPU alert: %.0f%%", m.stats.cpuOverall))
+		}
+		if m.ramAlert && !m.prevRAMAlert {
+			m.addEvent("warn", fmt.Sprintf("RAM alert: %.0f%%", m.stats.memPercent))
+		}
+		if m.stats.netUp > 10*1024*1024 || m.stats.netDown > 10*1024*1024 {
+			m.addEvent("warn", fmt.Sprintf("net spike ↑%s ↓%s",
+				formatBytes(m.stats.netUp), formatBytes(m.stats.netDown)))
+		}
+		m.prevCPUAlert = m.cpuAlert
+		m.prevRAMAlert = m.ramAlert
 		if err := logStats(m.stats, m.docker, m.cfg.verbose); err != nil {
 			m.logErr = err
 		}
 
 	case procsMsg:
 		m.procs = []procInfo(msg)
+		m.clampCursor()
 
 	case dockerMsg:
 		m.docker = []containerInfo(msg)
@@ -125,9 +233,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case killResultMsg:
 		if msg.err != nil {
 			m.killMsg = fmt.Sprintf("Kill failed: %v", msg.err)
+			m.addEvent("warn", fmt.Sprintf("kill failed: %s", m.pendingKillName))
 		} else {
-			m.killMsg = "Process killed"
+			m.killMsg = fmt.Sprintf("Killed: %s", m.pendingKillName)
+			m.addEvent("info", fmt.Sprintf("killed: %s", m.pendingKillName))
 		}
+		m.pendingKillName = ""
 		m.killMsgTTL = 3
 	}
 
@@ -150,7 +261,39 @@ func (m *model) pushHistory() {
 	m.netDownHist.push(downPct)
 }
 
+func (m model) viewHelp() string {
+	helpContent := `
+  KEYBINDINGS
+
+  Navigation
+  j / ↓        move cursor down in process list
+  k / ↑        move cursor up in process list
+
+  Actions
+  x            kill selected process
+  s            toggle sort order (cpu ↔ mem)
+  /            filter processes by name
+  Escape        exit filter mode / close help
+  ?            toggle this help overlay
+  q / Ctrl+C   quit
+`
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(titleColor).
+		Padding(1, 3).
+		Render(helpContent)
+
+	titleBar := lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).
+		Render(titleStyle.Render(" FLAWED  System Monitor "))
+	body := lipgloss.Place(m.width, m.height-2, lipgloss.Center, lipgloss.Center, box)
+	return titleBar + "\n" + body
+}
+
 func (m model) View() string {
+	if m.showHelp {
+		return m.viewHelp()
+	}
+
 	w := m.width
 	if w < 40 {
 		w = 40
@@ -184,13 +327,13 @@ func (m model) View() string {
 
 	// === LEFT COLUMN PANELS ===
 
-	// CPU Panel
+	// CPU Panel — alert border pulses when threshold exceeded
 	cpuContent := m.viewCPU(barW, sparkW)
-	cpuPanel := panel("CPU", cpuContent, leftW)
+	cpuPanel := panelAlert("CPU", cpuContent, leftW, m.cpuAlert, m.animFrame)
 
-	// Memory Panel
+	// Memory Panel — alert border pulses when threshold exceeded
 	memContent := m.viewMemory(barW, sparkW)
-	memPanel := panel("Memory", memContent, leftW)
+	memPanel := panelAlert("Memory", memContent, leftW, m.ramAlert, m.animFrame)
 
 	// Filesystems panel (full width left column)
 	fsContent := m.viewFilesystems(leftW - 8)
@@ -205,8 +348,14 @@ func (m model) View() string {
 	diskNetRow := lipgloss.JoinHorizontal(lipgloss.Top, diskIOPanel, " ", netPanel)
 
 	// Greeter panel — lives in the left column to fill the space below system stats
-	greeterContent := viewGreeter(leftW-6, m.animFrame)
-	greeterPanel := panel("Greeter", greeterContent, leftW)
+	// Give greeter more rain rows at larger terminal heights so the left
+	// column fills space and the column-equalizer has less work to do.
+	rainRows := 14 + (m.height-40)/3
+	if rainRows < 14 {
+		rainRows = 14
+	}
+	greeterContent := viewGreeter(leftW-6, m.animFrame, rainRows)
+	greeterPanel := panel("", greeterContent, leftW)
 
 	// System Info panel
 	sysInfoContent := m.viewSysInfo()
@@ -224,8 +373,16 @@ func (m model) View() string {
 	// === RIGHT COLUMN PANELS ===
 
 	// Processes Panel
+	procsTitle := fmt.Sprintf("Processes [%s]", m.cfg.sortBy)
+	if m.filterInput != "" {
+		procsTitle = fmt.Sprintf("Processes [%s] /%s", m.cfg.sortBy, m.filterInput)
+	}
 	procsContent := m.viewProcesses(rightW - 4)
-	procsPanel := panel(fmt.Sprintf("Processes [%s]", m.cfg.sortBy), procsContent, rightW)
+	procsPanel := panel(procsTitle, procsContent, rightW)
+
+	// Events Panel
+	eventsContent := m.viewEvents(rightW - 4)
+	eventsPanel := panel("Events", eventsContent, rightW)
 
 	// Temperature Panel (top 5)
 	tempContent := m.viewTemps()
@@ -240,13 +397,26 @@ func (m model) View() string {
 	dockerPanel := panel("Docker", dockerContent, dockHalfW)
 	batDockRow := lipgloss.JoinHorizontal(lipgloss.Top, batPanel, " ", dockerPanel)
 
+	sceneContent := viewScene(rightW-4, m.animFrame)
+	scenePanel := panel("", sceneContent, rightW)
+
 	rightCol := lipgloss.JoinVertical(lipgloss.Left,
 		procsPanel,
+		eventsPanel,
 		tempPanel,
 		batDockRow,
+		scenePanel,
 	)
 
 	// === JOIN COLUMNS ===
+	// Equalize column heights so neither leaves a blank strip beside the other.
+	leftLines := strings.Count(leftCol, "\n") + 1
+	rightLines := strings.Count(rightCol, "\n") + 1
+	if rightLines > leftLines {
+		leftCol = lipgloss.NewStyle().Height(rightLines).Render(leftCol)
+	} else if leftLines > rightLines {
+		rightCol = lipgloss.NewStyle().Height(leftLines).Render(rightCol)
+	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, " ", rightCol)
 
 	// === STATUS BAR ===
@@ -261,12 +431,15 @@ func (m model) View() string {
 	if len(m.stats.users) > 0 {
 		usersStr = fmt.Sprintf(" │ %d user(s)", len(m.stats.users))
 	}
-	statusLeft := statusBarStyle.Render(fmt.Sprintf(" %s │ up %s │ refresh %s%s",
-		hostname, uptimeStr, intervalStr, usersStr))
+	cpuMiniSpark := trimSpark(sparkline(m.cpuHist.values()), 10)
+	statusLeft := statusBarStyle.Render(fmt.Sprintf(" %s │ up %s │ refresh %s%s │ %s",
+		hostname, uptimeStr, intervalStr, usersStr, cpuMiniSpark))
 	statusRight := statusBarStyle.Render(
 		statusKeyStyle.Render("q") + statusBarStyle.Render(" quit  ") +
-			statusKeyStyle.Render("k") + statusBarStyle.Render(" kill  ") +
-			statusKeyStyle.Render("s") + statusBarStyle.Render(" sort "))
+			statusKeyStyle.Render("x") + statusBarStyle.Render(" kill  ") +
+			statusKeyStyle.Render("j/k") + statusBarStyle.Render(" nav  ") +
+			statusKeyStyle.Render("/") + statusBarStyle.Render(" filter  ") +
+			statusKeyStyle.Render("?") + statusBarStyle.Render(" help "))
 
 	gap := w - lipgloss.Width(statusLeft) - lipgloss.Width(statusRight)
 	if gap < 0 {
@@ -287,6 +460,13 @@ func (m model) View() string {
 
 func (m model) viewCPU(barW, sparkW int) string {
 	var b strings.Builder
+
+	// Waveform history chart.
+	wave := cpuWaveform(m.cpuHist.values(), sparkW, 6)
+	if wave != "" {
+		b.WriteString(wave + "\n")
+	}
+
 	spark := trimSpark(sparkline(m.cpuHist.values()), sparkW)
 
 	// Load average
@@ -485,7 +665,15 @@ func (m model) viewNetwork(sparkW int) string {
 
 	connStr := dimStyle.Render(fmt.Sprintf("  %d conns", m.stats.netConns))
 
-	return fmt.Sprintf("%s %s  %s\n  %s  %s\n\n%s %s  %s\n  %s  %s\n%s",
+	// Heatmap strip — uses the same width cap as sparklines.
+	heatW := sparkW / 2
+	if heatW < 4 {
+		heatW = 4
+	}
+	heatmap := netHeatmap(m.netUpHist.values(), m.netDownHist.values(), heatW)
+
+	return fmt.Sprintf("%s\n%s %s  %s\n  %s  %s\n\n%s %s  %s\n  %s  %s\n%s",
+		heatmap,
 		greenStyle.Render("↑ Up  "),
 		valueStyle.Render(rightPad(formatBytesPerSec(m.stats.netUp), 10)),
 		dimStyle.Render(upSpark),
@@ -588,14 +776,27 @@ func (m model) viewDocker(colW int) string {
 
 func (m model) viewProcesses(colW int) string {
 	var b strings.Builder
+
+	// Filter input bar.
+	if m.filterMode {
+		cursor := "█"
+		if m.animFrame%4 >= 2 {
+			cursor = " "
+		}
+		b.WriteString(lipgloss.NewStyle().Foreground(titleColor).Render("  / ") +
+			valueStyle.Render(m.filterInput+cursor) + "\n")
+	}
+
 	b.WriteString(fmt.Sprintf("  %s %s %s %s\n",
 		headerStyle.Render(rightPad("PID", 7)),
 		headerStyle.Render(rightPad("NAME", 20)),
 		headerStyle.Render(rightPad("CPU%", 7)),
 		headerStyle.Render(rightPad("MEM%", 7))))
-	for i, p := range m.procs {
+
+	fp := m.filteredProcs()
+	for i, p := range fp {
 		marker := "  "
-		if i == 0 {
+		if i == m.procCursor {
 			marker = procMarkerStyle.Render("> ")
 		}
 		row := fmt.Sprintf("%s%s %s %s %s",
@@ -605,12 +806,17 @@ func (m model) viewProcesses(colW int) string {
 			pctColor(float64(p.cpu)).Render(fmt.Sprintf("%5.1f%%", p.cpu)),
 			pctColor(float64(p.mem)*10).Render(fmt.Sprintf("%5.1f%%", p.mem)))
 
-		if i%2 == 0 {
+		if i == m.procCursor {
+			row = rowSelectedStyle.Render(row)
+		} else if i%2 == 0 {
 			row = rowEvenStyle.Render(row)
 		} else {
 			row = rowOddStyle.Render(row)
 		}
 		b.WriteString(row + "\n")
+	}
+	if len(fp) == 0 {
+		b.WriteString("  " + dimStyle.Render("no matches") + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

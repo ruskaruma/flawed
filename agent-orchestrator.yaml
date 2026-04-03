@@ -1,0 +1,33 @@
+port: 3001
+defaults:
+  runtime: tmux
+  agent: claude-code
+  workspace: worktree
+  notifiers:
+    - desktop
+projects:
+  flawed:
+    name: flawed
+    sessionPrefix: fla
+    repo: ruskaruma/flawed
+    path: /home/ruskaruma/Desktop/GITHUB/flawed
+    defaultBranch: main
+    agentRules: |-
+      Always run tests before pushing.
+      Use conventional commits (feat:, fix:, chore:, docs:, refactor:, test:).
+      Link issue numbers in commit messages.
+      Write clear commit messages that explain WHY, not just WHAT.
+
+      Follow Go best practices:
+
+      - Use gofmt for formatting
+      - Handle all errors explicitly, don't ignore them
+      - Use defer for cleanup operations
+      - Keep interfaces small and focused
+      - Use meaningful variable names (not single letters except in loops)
+      - Follow effective Go patterns
+
+      Before pushing, run these commands:
+      - go test ./... (run tests)
+      - go vet ./... (check for issues)
+      - gofmt -w . (format code)

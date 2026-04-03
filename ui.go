@@ -79,6 +79,10 @@ var (
 
 	rowOddStyle = lipgloss.NewStyle()
 
+	rowSelectedStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("#1E3A4A")).
+				Bold(true)
+
 	// Cached style for the process selector marker
 	procMarkerStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -163,5 +167,24 @@ func truncate(s string, n int) string {
 func panel(title, content string, width int) string {
 	s := panelStyle.Width(width - 2) // account for border
 	header := sectionStyle.Render("▎" + title)
+	return s.Render(header + "\n" + content)
+}
+
+// panelAlert renders like panel() but pulses the border red when alert is true.
+func panelAlert(title, content string, width int, alert bool, frame int) string {
+	if !alert {
+		return panel(title, content, width)
+	}
+	var borderCol lipgloss.Color
+	if frame%6 < 3 {
+		borderCol = lipgloss.Color("#FF5555")
+	} else {
+		borderCol = lipgloss.Color("#661111")
+	}
+	s := panelStyle.
+		Copy().
+		BorderForeground(borderCol).
+		Width(width - 2)
+	header := redStyle.Render("▎" + title)
 	return s.Render(header + "\n" + content)
 }
