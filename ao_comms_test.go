@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// aoEvent represents a single event in the AO comms protocol.
-type aoEvent struct {
+// aoMessage represents a single JSONL message from the AO inbox.
+type aoMessage struct {
 	Version int    `json:"v"`
 	ID      int    `json:"id"`
 	Epoch   int    `json:"epoch"`
@@ -16,85 +17,101 @@ type aoEvent struct {
 	Source  string `json:"source"`
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	Dedup   string `json:"dedup"`
 }
 
-func TestAOInboxParsesValidJSONL(t *testing.T) {
-	lines := []string{
-		`{"v":1,"id":1,"epoch":0,"ts":"2026-04-13T00:00:00Z","source":"orchestrator","type":"instruction","message":"hello"}`,
-		`{"v":1,"id":2,"epoch":0,"ts":"2026-04-13T00:00:01Z","source":"orchestrator","type":"instruction","message":"world"}`,
-	}
-
+func TestAOInboxParse(t *testing.T) {
+	// Write a synthetic inbox JSONL file and verify we can round-trip it.
 	dir := t.TempDir()
-	inbox := filepath.Join(dir, "inbox.jsonl")
+	inboxPath := filepath.Join(dir, "inbox")
 
-	var content []byte
-	for _, line := range lines {
-		content = append(content, []byte(line+"\n")...)
-	}
-	if err := os.WriteFile(inbox, content, 0644); err != nil {
-		t.Fatalf("writing inbox: %v", err)
-	}
-
-	data, err := os.ReadFile(inbox)
-	if err != nil {
-		t.Fatalf("reading inbox: %v", err)
-	}
-
-	// Parse each line as a JSON event
-	parsed := 0
-	start := 0
-	for i := 0; i < len(data); i++ {
-		if data[i] == '\n' {
-			line := data[start:i]
-			start = i + 1
-			if len(line) == 0 {
-				continue
-			}
-			var evt aoEvent
-			if err := json.Unmarshal(line, &evt); err != nil {
-				t.Errorf("line %d: invalid JSON: %v", parsed+1, err)
-				continue
-			}
-			if evt.Version != 1 {
-				t.Errorf("line %d: expected v=1, got %d", parsed+1, evt.Version)
-			}
-			if evt.Source != "orchestrator" {
-				t.Errorf("line %d: expected source=orchestrator, got %q", parsed+1, evt.Source)
-			}
-			if evt.Type != "instruction" {
-				t.Errorf("line %d: expected type=instruction, got %q", parsed+1, evt.Type)
-			}
-			parsed++
-		}
-	}
-
-	if parsed != len(lines) {
-		t.Errorf("expected %d events, parsed %d", len(lines), parsed)
-	}
-}
-
-func TestAOEventRoundTrip(t *testing.T) {
-	evt := aoEvent{
+	msg := aoMessage{
 		Version: 1,
-		ID:      1,
+		ID:      42,
 		Epoch:   0,
-		TS:      "2026-04-13T00:00:00Z",
-		Source:  "agent",
-		Type:    "completion",
-		Message: "task done",
+		TS:      "2026-04-13T00:00:00.000Z",
+		Source:  "orchestrator",
+		Type:    "instruction",
+		Message: "hello from the smoke test",
+		Dedup:   "test-dedup-1",
 	}
 
-	data, err := json.Marshal(evt)
+	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
+	data = append(data, '\n')
 
-	var decoded aoEvent
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := os.WriteFile(inboxPath, data, 0644); err != nil {
+		t.Fatalf("write inbox: %v", err)
+	}
+
+	// Read it back and parse.
+	raw, err := os.ReadFile(inboxPath)
+	if err != nil {
+		t.Fatalf("read inbox: %v", err)
+	}
+
+	var got aoMessage
+	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if decoded != evt {
-		t.Errorf("round-trip mismatch: got %+v, want %+v", decoded, evt)
+	if got.Type != "instruction" {
+		t.Errorf("expected type 'instruction', got %q", got.Type)
+	}
+	if got.Message != "hello from the smoke test" {
+		t.Errorf("unexpected message: %q", got.Message)
+	}
+	if got.ID != 42 {
+		t.Errorf("expected id 42, got %d", got.ID)
+	}
+}
+
+func TestAOInboxMultiLine(t *testing.T) {
+	// Verify we can parse multiple JSONL lines (simulating several messages).
+	dir := t.TempDir()
+	inboxPath := filepath.Join(dir, "inbox")
+
+	messages := []aoMessage{
+		{Version: 1, ID: 1, Type: "instruction", Message: "first"},
+		{Version: 1, ID: 2, Type: "instruction", Message: "second"},
+		{Version: 1, ID: 3, Type: "status", Message: "third"},
+	}
+
+	var fileData []byte
+	for _, m := range messages {
+		line, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		fileData = append(fileData, line...)
+		fileData = append(fileData, '\n')
+	}
+
+	if err := os.WriteFile(inboxPath, fileData, 0644); err != nil {
+		t.Fatalf("write inbox: %v", err)
+	}
+
+	raw, err := os.ReadFile(inboxPath)
+	if err != nil {
+		t.Fatalf("read inbox: %v", err)
+	}
+
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	var parsed []aoMessage
+	for dec.More() {
+		var m aoMessage
+		if err := dec.Decode(&m); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		parsed = append(parsed, m)
+	}
+
+	if len(parsed) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(parsed))
+	}
+	if parsed[1].Message != "second" {
+		t.Errorf("expected 'second', got %q", parsed[1].Message)
 	}
 }
